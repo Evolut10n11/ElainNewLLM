@@ -2,11 +2,16 @@ from services.stt_vad import record_vad, transcribe_vad
 from services.llm import generate_response
 from services.tts_silero import speak_text
 
-last_text = None
-
 def main():
+    last_text = None
+    last_response = None
+    chat_history = []
+
     while True:
         wav = record_vad()
+        if not wav:
+            continue
+
         user_text = transcribe_vad(wav)
 
         if not user_text.strip():
@@ -15,16 +20,41 @@ def main():
 
         print(f"Вы сказали: {user_text}")
 
-        # Защита от повтора одного и того же ввода
-        global last_text
-        if user_text == last_text:
-            print("🌀 Повторный ввод — пропускаю...")
+        if last_text and user_text.strip().lower().startswith(last_text.strip().lower()):
+            print("🔁 Похоже на повтор (вопрос) — пропускаю...")
             continue
-        last_text = user_text
 
-        response = generate_response(user_text)
+        if user_text.strip()[-1] not in ".!?…»":
+            print("🟡 Похоже, ты не договорил — не добавляю в историю.")
+            response = generate_response(user_text, chat_history)
+            print(f"Elaine-Сама: {response}")
+            speak_text(response)
+            with open("output/last.txt", "w", encoding="utf-8") as f:
+                f.write(response)
+            last_text = user_text
+            last_response = response
+            continue
+
+        response = generate_response(user_text, chat_history)
+
+        if last_response and response.strip().lower().startswith(last_response.strip().lower()):
+            print("🔁 Похоже на повтор (ответ) — пропускаю...")
+            continue
+
+        last_text = user_text
+        last_response = response
+
+        entry = f"Ты: {user_text}\nЭлейн-Сама: {response}"
+        if entry not in chat_history:
+            chat_history.append(entry)
+        if len(chat_history) > 4:
+            chat_history = chat_history[-4:]
+
         print(f"Elaine-Сама: {response}")
         speak_text(response)
+
+        with open("output/last.txt", "w", encoding="utf-8") as f:
+            f.write(response)
 
 if __name__ == "__main__":
     main()

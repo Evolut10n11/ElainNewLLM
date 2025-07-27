@@ -5,3 +5,8 @@ pydub
 torch
 keyboard
 soundfile
+numpy
+torch
+sounddevice
+soundfile
+llama-cpp-python
