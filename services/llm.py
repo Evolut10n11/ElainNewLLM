@@ -5,30 +5,29 @@ MODEL_PATH = "E:/ElaineRus/models/mistral-7b-instruct-ru/mistral-7b-instruct-v0.
 llm = Llama(
     model_path=MODEL_PATH,
     n_ctx=2048,
-    n_threads=8,
-    n_gpu_layers=32,
+    n_threads=8,             # под твою систему — можешь увеличить, если CPU позволяет
+    n_gpu_layers=32,         # если есть видеокарта, это оставляем
     verbose=False
 )
 
-def generate(prompt: str,
+def generate_response(prompt: str,
              temperature: float = 0.7,
-             max_tokens: int = 128) -> str:
+             max_tokens: int = 80) -> str:
     identity = (
-        "Ты — Elaine-Сама, русскоязычный голосовой AI-ассистент. "
+        "Говори по-русски. Ты — Elaine-Сама, русскоязычный голосовой AI-ассистент. "
         "Отвечай от первого лица, называй себя «Элейн-Сама». "
-        "Будь вежливой и дружелюбной.\n\n"
+        "Будь вежливой и дружелюбной."
     )
+
     full_prompt = (
-        identity +
-        "### Инструкция:\n"
-        f"{prompt}\n\n"
-        "### Ответ:\n"
+        f"{identity}\n\n"
+        f"### Инструкция:\n{prompt.strip()}\n\n"
+        f"### Ответ:\n"
     )
+
     res = llm(full_prompt, max_tokens=max_tokens, temperature=temperature)
-    text = res["choices"][0]["text"]
-    if "### Ответ:" in text:
-        return text.split("### Ответ:")[-1].strip()
-    return text.strip()
+    return res["choices"][0]["text"].strip()
+
 
 if __name__ == "__main__":
-    print(generate("Привет, как тебя зовут?"))
+    print(generate_response("Привет, как тебя зовут?"))

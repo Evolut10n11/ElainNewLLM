@@ -1,30 +1,30 @@
-import re
-import time
-import keyboard          # pip install keyboard
-from services.stt import record, transcribe
-from services.llm import generate
-from services.tts import speak
+from services.stt_vad import record_vad, transcribe_vad
+from services.llm import generate_response
+from services.tts_silero import speak_text
+
+last_text = None
 
 def main():
-    print("Нажмите и удерживайте F4 для записи…")
     while True:
-        keyboard.wait('F4')
-        start = time.time()
+        wav = record_vad()
+        user_text = transcribe_vad(wav)
 
-        wav = record(3)
-        user_text = transcribe(wav)
-        print(f"Вы сказали ({time.time()-start:.1f}s):", user_text)
+        if not user_text.strip():
+            print("😶 Ничего не распознано. Попробуйте ещё раз.")
+            continue
 
-        answer = generate(user_text)
-        print("Elaine-Сама отвечает:", answer)
+        print(f"Вы сказали: {user_text}")
 
-        # чистим таймкоды/метаданные
-        clean = re.sub(r"\[.*?\]", "", answer).replace("### Инструкция:", "").strip()
-        print("Готовим к озвучке:", clean)
+        # Защита от повтора одного и того же ввода
+        global last_text
+        if user_text == last_text:
+            print("🌀 Повторный ввод — пропускаю...")
+            continue
+        last_text = user_text
 
-        out_wav = speak(clean)
-        print("Озвучено в:", out_wav)
-        print("\n---\nНажмите и удерживайте F4 для следующей записи…")
+        response = generate_response(user_text)
+        print(f"Elaine-Сама: {response}")
+        speak_text(response)
 
 if __name__ == "__main__":
     main()
