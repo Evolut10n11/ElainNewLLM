@@ -39,4 +39,4 @@ ElaineLite/
 - ffmpeg.exe в `PATH`
 
 ---
-Проект собирался с ❤️ Ваней и Элейн-Сама.
+_Rodionov Ivan_
