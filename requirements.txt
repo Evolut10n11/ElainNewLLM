@@ -1,0 +1,7 @@
+sounddevice
+numpy
+pybind11
+pydub
+torch
+keyboard
+soundfile
