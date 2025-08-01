@@ -1,64 +1,69 @@
-import asyncio
-import time
+"""
+Точка входа в приложение: объединяет распознавание речи,
+генерацию ответа и синтез речи. Модули могут находиться либо в
+пакете `services`, либо в текущем каталоге. Для переносимости
+пробуем импортировать из `services` и, при неудаче, используем
+локальные файлы.
+"""
 
-from services.stt_vad    import record_vad, transcribe_vad
-from services.llm       import generate_response
-from services.tts_silero import speak_text
-from vtube_controller   import vts_client
+# Пытаемся импортировать из пакета services. Если он отсутствует (например,
+# в упрощенной структуре проекта), импортируем из текущей директории.
+try:
+    from services.stt_vad import record_vad, transcribe_vad
+    from services.llm import generate_response
+    from services.tts_silero import speak_text
+except ImportError:
+    from stt_vad import record_vad, transcribe_vad  # type: ignore
+    from llm import generate_response  # type: ignore
+    from tts_silero import speak_text  # type: ignore
+from time import sleep
 
 def main():
-    # 1) Аутентификация VTube Studio — один раз при старте
-    try:
-        asyncio.run(vts_client.authenticate())
-    except Exception as e:
-        print(f"❌ Аутентификация не удалась: {e}")
-        return
-
-    chat_history  = []
-    last_response = ""
-
+    last_text = None
+    last_response = None
+    chat_history = []
     while True:
         wav = record_vad()
         if not wav:
             continue
-
         user_text = transcribe_vad(wav)
         if not user_text.strip():
             print("😶 Ничего не распознано. Попробуйте ещё раз.")
             continue
-
         print(f"Вы сказали: {user_text}")
-
-        # 2) Фильтрация эха: если это снова наш последний ответ — пропускаем
-        if last_response and user_text.lower().startswith(last_response.lower()):
-            print("🔁 Эхо TTS — пропускаю...")
+        # Проверка на повторяющийся вопрос (во избежание эха)
+        if last_text and user_text.strip().lower().startswith(last_text.strip().lower()):
+            print("🔁 Похоже на повтор (вопрос) — пропускаю...")
             continue
-
-        # 3) Генерируем ответ через LLM
+        # Генерация ответа (история используется при необходимости)
         response = generate_response(user_text, chat_history)
-
-        # 4) Если нет завершающего знака — добавляем точку
-        if response and response[-1] not in ".!?…»":
-            response += "."
-
+        # Проверка, завершено ли предложение пользователя
+        if user_text.strip()[-1] not in ".!?…»":
+            print("🟡 Похоже, ты не договорил — не добавляю запрос в историю.")
+        # Проверка, завершён ли ответ модели
+        if response.strip()[-1] not in ".!?…»":
+            print("🟡 Ответ модели кажется незавершённым.")
+        # Фильтр на повторяющийся ответ (во избежание зацикливания)
+        if last_response and response.strip().lower().startswith(last_response.strip().lower()):
+            print("🔁 Похоже на повтор (ответ) — пропускаю озвучивание...")
+            last_text = user_text
+            last_response = response
+            continue
+        # Печатаем и озвучиваем ответ
         print(f"Elaine-Сама: {response}")
-
-        # 5) Озвучиваем с синхронизацией рта
-        duration = speak_text(response)
-
-        # 6) Обновляем историю
+        speak_text(response)
+        # **Важно:** ждем небольшую паузу перед возобновлением прослушивания,
+        # чтобы TTS-голос не был воспринят микрофоном
+        sleep(1.0)
+        # Обновляем историю диалога (храним последние несколько сообщений)
         entry = f"Ты: {user_text}\nЭлейн-Сама: {response}"
-        chat_history.append(entry)
+        if entry not in chat_history:
+            chat_history.append(entry)
         if len(chat_history) > 4:
             chat_history = chat_history[-4:]
+        # Обновляем последние реплики
+        last_text = user_text
         last_response = response
-
-        # 7) Сохраняем последний ответ
-        with open("output/last.txt", "w", encoding="utf-8") as f:
-            f.write(response)
-
-        # Небольшая пауза перед новой записью
-        time.sleep(0.3)
 
 if __name__ == "__main__":
     main()
