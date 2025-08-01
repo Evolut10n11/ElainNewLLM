@@ -10,11 +10,11 @@
 # в упрощенной структуре проекта), импортируем из текущей директории.
 try:
     from services.stt_vad import record_vad, transcribe_vad
-    from services.llm import generate_response
+    from services.llm import generate_response, USER_NAME
     from services.tts_silero import speak_text
 except ImportError:
     from stt_vad import record_vad, transcribe_vad  # type: ignore
-    from llm import generate_response  # type: ignore
+    from llm import generate_response, USER_NAME  # type: ignore
     from tts_silero import speak_text  # type: ignore
 from time import sleep
 
@@ -56,7 +56,8 @@ def main():
         # чтобы TTS-голос не был воспринят микрофоном
         sleep(1.0)
         # Обновляем историю диалога (храним последние несколько сообщений)
-        entry = f"Ты: {user_text}\nЭлейн-Сама: {response}"
+        # Формируем запись для истории диалога с использованием имени пользователя из llm
+        entry = f"{USER_NAME}: {user_text}\nЭлейн-Сама: {response}"
         if entry not in chat_history:
             chat_history.append(entry)
         if len(chat_history) > 4:
