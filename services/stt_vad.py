@@ -5,6 +5,7 @@ import sounddevice as sd
 import numpy as np
 import os
 import time
+import threading
 
 # ПУТИ К WHISPER
 WHISPER_BIN = "E:/ElaineRus/whisper.cpp/build/bin/Release/whisper.exe"
@@ -16,6 +17,8 @@ SAMPLE_RATE = 16000
 MIN_DURATION = 0.5
 MAX_RECORD_SECONDS = 3.5
 
+# Кэшируем запуск whisper.exe для одновременного многопоточного запуска
+lock = threading.Lock()
 
 def wait_for_voice(threshold=THRESHOLD, timeout=10):
     """Ожидает появления речи на микрофоне."""
@@ -30,7 +33,6 @@ def wait_for_voice(threshold=THRESHOLD, timeout=10):
             return True
     print("🔇 Голос не обнаружен — таймаут.")
     return False
-
 
 def record_vad(seconds=MAX_RECORD_SECONDS) -> str:
     """Записывает звук с микрофона после VAD и сохраняет во временный WAV."""
@@ -47,7 +49,6 @@ def record_vad(seconds=MAX_RECORD_SECONDS) -> str:
         sf.write(f.name, audio, SAMPLE_RATE, subtype='PCM_16')
         return f.name
 
-
 def clean_transcript(text: str) -> str:
     """Удаляет вставки и шум из текста."""
     trash_phrases = [
@@ -58,9 +59,8 @@ def clean_transcript(text: str) -> str:
         text = text.replace(phrase, "")
     return text.strip()
 
-
 def transcribe_vad(wav_path: str) -> str:
-    """Распознаёт WAV-файл с помощью whisper.cpp."""
+    """Распознаёт WAV-файл с помощью whisper.cpp (ускоренный запуск)."""
     print("🧠 Распознаём голос через whisper.exe...")
 
     info = sf.info(wav_path)
@@ -69,24 +69,33 @@ def transcribe_vad(wav_path: str) -> str:
         os.remove(wav_path)
         return ""
 
+    output_path = wav_path.replace(".wav", "")
     cmd = [
         WHISPER_BIN,
         "-m", WHISPER_MODEL,
         "-l", "ru",
-        "--threads", "8",
+        "--threads", str(os.cpu_count() or 8),
+        "-otxt",
+        "-of", output_path,
         wav_path
     ]
-    try:
-        out = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, encoding="utf-8", timeout=15
-        ).stdout
 
-        lines = [l for l in out.splitlines() if "-->" in l]
-        if not lines:
+    try:
+        with lock:
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=15, text=True, encoding="utf-8"
+            )
+            print(result.stdout.strip())
+
+        txt_path = output_path + ".txt"
+        if not os.path.exists(txt_path):
+            print("⚠️ .txt файл не найден.")
             return ""
-        result = lines[-1].split("]")[-1].strip()
-        return clean_transcript(result)
+
+        with open(txt_path, "r", encoding="utf-8") as f:
+            text = f.read().strip()
+        return clean_transcript(text)
 
     except subprocess.TimeoutExpired:
         print("⏳ Whisper завис — превышен лимит времени.")
@@ -98,3 +107,7 @@ def transcribe_vad(wav_path: str) -> str:
 
     finally:
         os.remove(wav_path)
+        try:
+            os.remove(output_path + ".txt")
+        except Exception:
+            pass
