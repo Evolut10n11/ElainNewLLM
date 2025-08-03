@@ -6,9 +6,9 @@ MODEL_PATH = "E:/ElaineRus/models/mistral-7b-instruct-ru/mistral-7b-instruct-v0.
 
 llm = Llama(
     model_path=MODEL_PATH,
-    n_ctx=2048,
+    n_ctx=8192,
     n_threads=os.cpu_count(),   # задействуем все ядра CPU
-    n_gpu_layers=16,            # часть слоёв на GPU
+    n_gpu_layers=100,            # часть слоёв на GPU
     verbose=False,
     use_mmap=True                # ускоренное чтение модели через mmap
 )

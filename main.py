@@ -1,4 +1,3 @@
-
 from time import sleep
 import threading
 
@@ -18,6 +17,7 @@ CLIENT_SECRET = 'b95jtu9b4ibf1x4qsb27xxnkd76ivi'
 TWITCH_TOKEN = 'si14jnonj102h4rvzyuk7hyhu71vk7'
 TWITCH_NICK = 'kakoitochelikhihi'
 TWITCH_CHANNEL = 'kakoitochelikhihi'
+BOT_ID = '76417315'
 
 class ElaineTwitchBot(commands.Bot):
     def __init__(self):
@@ -25,6 +25,7 @@ class ElaineTwitchBot(commands.Bot):
             token=TWITCH_TOKEN,
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
+            bot_id=BOT_ID,
             prefix='!',
             initial_channels=[TWITCH_CHANNEL],
         )
