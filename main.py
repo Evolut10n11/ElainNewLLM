@@ -1,5 +1,6 @@
 from time import sleep
 import threading
+import asyncio
 
 try:
     from services.stt_vad import record_vad, transcribe_vad
@@ -11,6 +12,8 @@ except ImportError:
     from tts_silero import speak_text  # type: ignore
 
 from twitchio.ext import commands
+import re
+import torch
 
 CLIENT_ID = 'wytz41znebdbonzo66ospr4knl39j7'
 CLIENT_SECRET = 'b95jtu9b4ibf1x4qsb27xxnkd76ivi'
@@ -50,36 +53,42 @@ class ElaineTwitchBot(commands.Bot):
         print(f"Элейн-Сама (чат): {response}")
         speak_text(response)
 
+
 def run_twitch_bot():
     bot = ElaineTwitchBot()
     bot.run(with_adapter=True)
+
+
+def is_garbage_text(text: str) -> bool:
+    latin_words = re.findall(r"[a-zA-Z]{3,}", text)
+    has_cyrillic = bool(re.search(r"[а-яА-ЯёЁ]", text))
+    return len(latin_words) >= 3 and not has_cyrillic
+
 
 def main():
     last_text = None
     last_response = None
     chat_history = []
 
-    try:
-        from screen_capture import run_screen_observer  # type: ignore
-        screen_thread = threading.Thread(target=run_screen_observer, args=(30.0,), daemon=True)
-        screen_thread.start()
-        print("🖥️ Запущено фоновое наблюдение за экраном.")
-    except Exception:
-        print("⚠️ Не удалось запустить наблюдение за экраном. Продолжаем работу без него.")
-
     twitch_thread = threading.Thread(target=run_twitch_bot, daemon=True)
     twitch_thread.start()
     print("🟣 Запущен Twitch-бот.")
 
+    print("🎙 Жду начала речи...")
     while True:
-        wav = record_vad()
-        if not wav:
+        audio = record_vad()
+        if getattr(audio, 'size', 0) == 0:
             continue
 
-        user_text = transcribe_vad(wav)
+        user_text = transcribe_vad(audio)
         if not user_text.strip():
             print("😶 Ничего не распознано. Попробуйте ещё раз.")
             continue
+
+        if is_garbage_text(user_text):
+            print("❌ Мусорный англоязычный текст — игнорирую.")
+            continue
+
         print(f"Вы сказали: {user_text}")
 
         if last_text and user_text.strip().lower().startswith(last_text.strip().lower()):
@@ -99,8 +108,7 @@ def main():
             continue
 
         print(f"Elaine-Сама: {response}")
-        speak_text(response)
-        sleep(1.0)
+        threading.Thread(target=speak_text, args=(response,), daemon=True).start()
 
         entry = f"{USER_NAME}: {user_text}\nЭлейн-Сама: {response}"
         if entry not in chat_history:
@@ -110,6 +118,7 @@ def main():
 
         last_text = user_text
         last_response = response
+
 
 if __name__ == "__main__":
     main()

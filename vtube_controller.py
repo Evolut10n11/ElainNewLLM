@@ -1,75 +1,90 @@
+"""
+Модуль для взаимодействия с VTube Studio Public API.
+
+Новая реализация обеспечивает:
+* Постоянное WebSocket‑соединение и фоновую задачу «keep‑alive»,
+  чтобы API не отключало плагин между вызовами.
+* Обёртки `authenticate()` и `set_mouth_open()` доступны как
+  синхронные методы. Они ставят задания в фоновую asyncio‑петлю,
+  поэтому могут вызываться из любого потока без ожидания loop.run().
+* Аутентификация срабатывает только при первом успешном подключении.
+
+Использование:
+
+```python
+vts_client = VTubeStudioClient()
+vts_client.authenticate()  # однажды, затем соединение поддерживается
+vts_client.set_mouth_open(0.5)
+```
+
+Периодический keep‑alive автоматически отправляет запрос
+`APIAvailableRequest` каждые 10 секунд, чтобы удерживать соединение.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import json
-import websockets
-import os
+import threading
+from typing import Any, Dict
 
-TOKEN_FILE   = "vtubeStudio_token.txt"
-HOST         = "ws://localhost:8001"
-PLUGIN_NAME  = "Elaine1"
-PLUGIN_DEV   = "nvm1"
+import websockets  # type: ignore
+
+TOKEN_FILE = "vtubeStudio_token.txt"
+HOST = "ws://localhost:8001"
+PLUGIN_NAME = "Elaine1"
+PLUGIN_DEV = "nvm1"
+
 
 class VTubeStudioClient:
-    """
-    Клиент для взаимодействия с VTube Studio Public API. Поддерживает
-    повторное использование WebSocket‑соединения и выполняет
-    аутентификацию только при первом вызове.
-    """
+    """Клиент для работы с VTube Studio Public API с постоянным соединением."""
 
     def __init__(self) -> None:
-        # Сохранённый токен; читается из файла или запрашивается у VTS.
+        # Переменные состояния
         self.token: str | None = None
-        # Текущий WebSocket‑клиент. Может быть None, если ещё не соединены.
         self.ws: websockets.WebSocketClientProtocol | None = None
-        # Флаг успешной аутентификации. Используется в паре с
-        # authenticated_ws, чтобы определять, нужно ли повторно
-        # аутентифицировать текущее соединение.
         self.authenticated: bool = False
-        # Последнее WebSocket‑соединение, на котором выполнена
-        # аутентификация. Если соединение меняется, требуется
-        # повторная аутентификация.
-        self._auth_ws: websockets.WebSocketClientProtocol | None = None
+        self._printed_auth_success: bool = False
+        # Фоновый asyncio‑цикл, работающий в отдельном потоке
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._loop_thread.start()
+        # Задача keep‑alive
+        self._keep_alive_task: asyncio.Future | None = None
 
-    async def connect(self) -> None:
-        """
-        Устанавливает соединение с WebSocket API VTube Studio, если его ещё нет
-        или оно было закрыто. Подключение открывается только один раз.
-        """
-        # Если уже есть открытое соединение, ничего не делаем
+    # ------------------------------------------------------------------
+    # Вспомогательные асинхронные методы (исполняются в фоновом цикле)
+    async def _connect(self) -> None:
+        """Создаёт WebSocket‑подключение, если его нет или оно закрыто."""
         if self.ws is not None and not self.ws.closed:
             return
-        # Создаём новое подключение
         self.ws = await websockets.connect(HOST)
 
-    async def send(self, payload: dict) -> dict:
-        """
-        Отправляет запрос в VTube Studio и возвращает ответ в виде словаря.
-        Предполагается, что соединение уже установлено.
-        """
-        assert self.ws is not None, "WebSocket connection is not established"
+    async def _send(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Отправляет payload по WebSocket и получает ответ."""
+        if self.ws is None or self.ws.closed:
+            await self._connect()
+        assert self.ws is not None
         await self.ws.send(json.dumps(payload))
-        response = await self.ws.recv()
-        return json.loads(response)
+        resp = await self.ws.recv()
+        return json.loads(resp)
 
-    async def authenticate(self) -> None:
-        """
-        Выполняет аутентификацию плагина в VTube Studio.
-        Повторные вызовы безопасны: если клиент уже аутентифицирован,
-        метод просто завершится.
-        """
-        # Убедимся, что есть подключение
-        await self.connect()
-        # Если текущее соединение уже было аутентифицировано, выходим
-        if (
-            self.authenticated
-            and self.ws is not None
-            and self.ws == self._auth_ws
-            and not self.ws.closed
-        ):
+    async def _authenticate(self) -> None:
+        """Асинхронная часть аутентификации."""
+        # Убедимся, что есть соединение
+        await self._connect()
+        # Уже аутентифицированы
+        if self.authenticated and self.ws is not None and not self.ws.closed:
             return
-        # Загрузка или получение токена
-        if not os.path.exists(TOKEN_FILE):
-            # Запрашиваем токен у VTS
-            tok_req = {
+        # Загружаем или получаем токен
+        token: str | None = None
+        try:
+            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                token = f.read().strip()
+        except FileNotFoundError:
+            token = None
+        if not token:
+            req = {
                 "apiName": "VTubeStudioPublicAPI",
                 "apiVersion": "1.0",
                 "requestID": "requestToken",
@@ -79,23 +94,22 @@ class VTubeStudioClient:
                     "pluginDeveloper": PLUGIN_DEV,
                 },
             }
-            tok_res = await self.send(tok_req)
-            self.token = tok_res["data"]["authenticationToken"]
-            # Сохраняем токен для последующего использования
-            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-                f.write(self.token)
-            # Просим пользователя подтвердить доступ
-            print("🔐 Теперь в VTube Studio нажмите «Allow», потом нажмите Enter…")
+            res = await self._send(req)
+            token = res["data"]["authenticationToken"]
+            # Сохраняем токен
+            try:
+                with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                    f.write(token)
+            except OSError:
+                pass
+            # Пользователь должен подтвердить доступ в VTube Studio
+            print("🔐 Теперь в VTube Studio нажмите ‘Allow’, потом нажмите Enter…")
             try:
                 input()
             except EOFError:
-                # Игнорируем EOFError в автоматизированных тестах
                 pass
-        else:
-            # Читаем сохранённый токен
-            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-                self.token = f.read().strip()
-        # Отправляем запрос аутентификации с токеном
+        self.token = token
+        # Отправляем запрос аутентификации
         auth_req = {
             "apiName": "VTubeStudioPublicAPI",
             "apiVersion": "1.0",
@@ -107,23 +121,47 @@ class VTubeStudioClient:
                 "authenticationToken": self.token,
             },
         }
-        auth_res = await self.send(auth_req)
-        if not auth_res["data"].get("authenticated"):
-            raise RuntimeError("❌ Auth failed: " + auth_res["data"].get("reason", ""))
-        # Отмечаем, что мы успешно аутентифицированы на текущем соединении
+        auth_res = await self._send(auth_req)
+        if not auth_res.get("data", {}).get("authenticated"):
+            self.authenticated = False
+            raise RuntimeError(
+                "❌ Auth failed: " + auth_res.get("data", {}).get("reason", "")
+            )
         self.authenticated = True
-        self._auth_ws = self.ws
-        print("✅ Аутентификация прошла успешно.")
+        if not self._printed_auth_success:
+            print("✅ Аутентификация прошла успешно.")
+            self._printed_auth_success = True
+        # Запускаем keep‑alive, если он ещё не запущен
+        if self._keep_alive_task is None:
+            self._keep_alive_task = asyncio.ensure_future(self._keep_alive(), loop=self._loop)
 
-    async def set_mouth_open(self, value: float) -> None:
-        """
-        Инжектирует значение входного параметра MouthOpen.
-        Диапазон value: 0.0 (рот закрыт) ... 1.0 (рот полностью открыт).
-        """
-        # Убедимся, что соединение установлено и мы аутентифицированы
-        await self.connect()
-        # authenticate() проверит, требуется ли повторная аутентификация
-        await self.authenticate()
+    async def _keep_alive(self) -> None:
+        """Периодически отправляет запрос APIAvailableRequest для поддержания соединения."""
+        while True:
+            try:
+                # Каждые 10 секунд
+                await asyncio.sleep(10)
+                await self._connect()
+                if not self.authenticated:
+                    await self._authenticate()
+                ping = {
+                    "apiName": "VTubeStudioPublicAPI",
+                    "apiVersion": "1.0",
+                    "requestID": "keepAlive",
+                    "messageType": "APIAvailableRequest",
+                }
+                await self._send(ping)
+            except Exception:
+                # В случае ошибки сбрасываем флаг и пробуем снова на следующей итерации
+                self.authenticated = False
+                continue
+
+    async def _set_mouth_open_async(self, value: float) -> None:
+        """Асинхронно отправляет параметр MouthOpen."""
+        await self._connect()
+        if not self.authenticated:
+            await self._authenticate()
+        value = max(0.0, min(1.0, float(value)))
         payload = {
             "apiName": "VTubeStudioPublicAPI",
             "apiVersion": "1.0",
@@ -135,6 +173,22 @@ class VTubeStudioClient:
                 ]
             },
         }
-        res = await self.send(payload)
-        # Для отладки выводим результат (ожидается пустой data при успехе)
-        #print(f"📤 InjectParameterDataResponse: {res}")
+        try:
+            await self._send(payload)
+        except Exception:
+            self.authenticated = False
+            raise
+
+    # ------------------------------------------------------------------
+    # Публичные методы (синхронные), вызываемые из любого потока
+    def authenticate(self) -> None:
+        """Гарантирует аутентификацию. Возвращает после завершения."""
+        fut = asyncio.run_coroutine_threadsafe(self._authenticate(), self._loop)
+        return fut.result()
+
+    def set_mouth_open(self, value: float) -> None:
+        """Синхронно устанавливает параметр MouthOpen."""
+        fut = asyncio.run_coroutine_threadsafe(
+            self._set_mouth_open_async(value), self._loop
+        )
+        return fut.result()
